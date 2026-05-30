@@ -2,6 +2,8 @@ const express = require('express');
 const cors = require('cors');
 const mysql = require('mysql2');
 const multer = require('multer');
+const cloudinary = require('cloudinary').v2;
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
 const path = require('path');
 const fs = require('fs');
 require('dotenv').config();
@@ -9,24 +11,42 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-app.use(cors());
+app.use(cors({
+  origin: [
+    'http://localhost:5173',
+    /\.vercel\.app$/,
+  ],
+  credentials: true,
+}));
 app.use(express.json());
 
-const uploadDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
-app.use('/uploads', express.static(uploadDir));
-
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => cb(null, uploadDir),
-    filename: (req, file, cb) => {
-        const ext = path.extname(file.originalname);
-        cb(null, `warung_${Date.now()}${ext}`);
-    }
+// ── Konfigurasi Cloudinary ────────────────────────────────────
+cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key:    process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET,
 });
+
+// ── Multer Storage ke Cloudinary ─────────────────────────────
+const storage = new CloudinaryStorage({
+    cloudinary,
+    params: async (req, file) => ({
+        folder:         'univora',
+        allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
+        transformation: [{ width: 1200, crop: 'limit', quality: 'auto' }],
+        public_id: `univora_${Date.now()}`,
+    }),
+});
+
 const fileFilter = (req, file, cb) => {
     const allowed = /jpeg|jpg|png|webp/;
-    allowed.test(path.extname(file.originalname).toLowerCase()) ? cb(null, true) : cb(new Error('Hanya file gambar yang diizinkan.'));
+    if (allowed.test(path.extname(file.originalname).toLowerCase())) {
+        cb(null, true);
+    } else {
+        cb(new Error('Hanya file gambar (jpg, png, webp) yang diizinkan.'));
+    }
 };
+
 const upload = multer({ storage, fileFilter, limits: { fileSize: 5 * 1024 * 1024 } });
 
 const db = mysql.createConnection({
@@ -223,7 +243,7 @@ app.put('/api/users/:id', (req, res) => {
 app.post('/api/users/:id/avatar', upload.single('foto'), (req, res) => {
     const { id } = req.params;
     if (!req.file) return res.status(400).json({ success: false, message: 'File foto tidak ditemukan.' });
-    const fotoUrl = `http://localhost:5000/uploads/${req.file.filename}`;
+    const fotoUrl = req.file.path; // Cloudinary otomatis return URL lengkap di req.file.path
     db.query('UPDATE users SET foto_profil = ? WHERE id = ?', [fotoUrl, id], (err, result) => {
         if (err)                  return res.status(500).json({ success: false, message: 'Gagal menyimpan foto.' });
         if (!result.affectedRows) return res.status(404).json({ success: false, message: 'User tidak ditemukan.' });
@@ -439,7 +459,7 @@ app.post('/api/places', upload.fields([
 
     // Cover banner: dari field 'foto'
     const coverFile = req.files?.foto?.[0];
-    const banner_img = coverFile ? `http://localhost:5000/uploads/${coverFile.filename}` : 'default_warung.jpg';
+    const banner_img = coverFile ? coverFile.path : 'default_warung.jpg'; // coverFile.path = Cloudinary URL
 
     const firstKategoriId = parsedKategoriIds[0];
     db.query('SELECT nama FROM kategori_kuliner WHERE id = ?', [firstKategoriId], (err, katRows) => {
@@ -474,7 +494,7 @@ app.post('/api/places', upload.fields([
                 if (galeriFiles.length > 0) {
                     const fotoRows = galeriFiles.map(f => [
                         newPlaceId, userId, 'galeri',
-                        `http://localhost:5000/uploads/${f.filename}`, null
+                        f.path, null // f.path = Cloudinary URL
                     ]);
                     db.query('INSERT INTO foto_tempat (tempat_makan_id, user_id, tipe, url, keterangan) VALUES ?',
                         [fotoRows], (err4) => {
@@ -565,7 +585,7 @@ app.post('/api/places/:id/photos', upload.array('foto', 10), (req, res) => {
         parseInt(placeId),
         parseInt(user_id) || null,
         jenisFoto,
-        `http://localhost:5000/uploads/${file.filename}`,
+        file.path, // file.path = Cloudinary URL
         keterangan || null
     ]);
 
