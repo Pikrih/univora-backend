@@ -49,18 +49,41 @@ const fileFilter = (req, file, cb) => {
 
 const upload = multer({ storage, fileFilter, limits: { fileSize: 5 * 1024 * 1024 } });
 
-const db = mysql.createConnection({
-  host:     process.env.DB_HOST,
-  port:     parseInt(process.env.DB_PORT) || 3306,
-  user:     process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
+// ── Koneksi MySQL: createPool agar tidak crash saat idle di Railway ────────
+const db = mysql.createPool({
+    host:               process.env.DB_HOST,
+    port:               parseInt(process.env.DB_PORT) || 3306,
+    user:               process.env.DB_USER,
+    password:           process.env.DB_PASSWORD,
+    database:           process.env.DB_NAME,
+    waitForConnections: true,
+    connectionLimit:    10,
+    queueLimit:         0,
+    enableKeepAlive:    true,
+    keepAliveInitDelay: 0,
 });
 
-db.connect((err) => {
-    if (err) { console.error('Database gagal terhubung:', err); }
-    else {
-        console.log('Database MySQL Berhasil Terhubung!');
+// ── Error handler global pool ─────────────────────────────────────────────
+// Tangkap error 'inactivity disconnect' agar server tidak crash
+db.on('error', (err) => {
+    console.error('MySQL pool error (ditangani):', err.code, err.message);
+    // Pool akan otomatis buat koneksi baru — tidak perlu reconnect manual
+});
+
+// ── Keep-alive ping setiap 5 menit ───────────────────────────────────────
+// Mencegah Railway MySQL memutus koneksi karena idle (wait_timeout)
+setInterval(() => {
+    db.query('SELECT 1', (err) => {
+        if (err) console.error('Keep-alive ping gagal:', err.message);
+        else console.log('Keep-alive ping OK');
+    });
+}, 5 * 60 * 1000); // setiap 5 menit
+
+// ── Test koneksi + migrasi tabel ─────────────────────────────────────────
+db.getConnection((err, connection) => {
+    if (err) { console.error('Database gagal terhubung:', err); return; }
+    console.log('Database MySQL Berhasil Terhubung!');
+    connection.release();
 
         // ── Tabel kategori referensi (master) ─────────────────────────────
         db.query(`
@@ -149,8 +172,7 @@ db.connect((err) => {
                 console.log('Kolom jam_buka & jam_tutup sudah ada.');
             }
         });
-    }
-});
+}); // tutup db.getConnection
 
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
